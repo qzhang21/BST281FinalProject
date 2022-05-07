@@ -1,0 +1,42 @@
+---
+title: "BST281FP_VariableSelectionandRegression"
+author: "Marie Zhang"
+date: "5/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(usdm)
+```
+
+
+```{r}
+# read in data
+data_dir_pc = paste(getwd(),"preprocessing","normalized_data_PC3.tsv",sep='/') 
+df_pc = read.csv(data_dir_pc,
+                 sep="\t",row.names='X')
+data_dir_du = paste(getwd(),"preprocessing","normalized_data_DU145.tsv",sep='/') 
+df_du = read.csv(data_dir_du,
+                 sep="\t",row.names='X')
+```
+
+
+```{r}
+X_pc = df_pc[,-c(1:4)]
+X_du = df_du[,-c(1:4)]
+```
+
+```{r}
+vif_pc = vifstep(as.matrix(X_pc),th=10)
+vif_du = vifstep(as.matrix(X_du),th=10)
+```
+
+```{r}
+pc_vars = colnames(vif_pc@corMatrix)
+du_vars = colnames(vif_du@corMatrix)
+```
+
