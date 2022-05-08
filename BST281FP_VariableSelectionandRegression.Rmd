@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(usdm)
+library(stringr)
 ```
 
 
@@ -39,4 +40,33 @@ vif_du = vifstep(as.matrix(X_du),th=10)
 pc_vars = colnames(vif_pc@corMatrix)
 du_vars = colnames(vif_du@corMatrix)
 ```
+
+Obtain intersection of VIF selected genes across both datasets
+```{r}
+file.remove("Marie_selectedgenes.txt")
+selected_genes = intersect(pc_vars,du_vars)
+invisible(lapply(selected_genes,write,"Marie_selectedgenes.txt",append=TRUE))
+```
+
+Deal with gene names
+```{r}
+genes = unlist(lapply(selected_genes,function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
+colnames(X_du) = unlist(lapply(colnames(X_du),function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
+colnames(X_pc) = unlist(lapply(colnames(X_pc),function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
+X_du = X_du[genes]
+X_pc = X_pc[genes]
+```
+
+response variables
+```{r}
+Y_du = as.factor(df_du$response=="Res") # Resistant is 1
+Y_pc = as.factor(df_pc$response=="Res")
+```
+
+Full model
+```{r}
+full.log_du = glm(Y_du~.,data=X_du,family=binomial(link="logit"))
+full.log_pc = glm(Y_pc~.,data=X_pc,family=binomial(link="logit"))
+```
+
 
