@@ -12,6 +12,14 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(usdm)
 library(stringr)
+library(caret)
+library(ROCR)
+library(dplyr)
+library(glmnet)
+library(ggplot2)
+library(patchwork)
+#library(car)
+#library(MASS)
 ```
 
 
@@ -27,8 +35,8 @@ df_du = read.csv(data_dir_du,
 
 
 ```{r}
-X_pc = df_pc[,-c(1:4)]
-X_du = df_du[,-c(1:4)]
+X_pc = df_pc[,-c(1:5)]
+X_du = df_du[,-c(1:5)]
 ```
 
 ```{r}
@@ -48,25 +56,365 @@ selected_genes = intersect(pc_vars,du_vars)
 invisible(lapply(selected_genes,write,"Marie_selectedgenes.txt",append=TRUE))
 ```
 
-Deal with gene names
+Get selected gene data
 ```{r}
-genes = unlist(lapply(selected_genes,function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
-colnames(X_du) = unlist(lapply(colnames(X_du),function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
-colnames(X_pc) = unlist(lapply(colnames(X_pc),function(x) unlist(str_split_fixed(x,"[\\.,\\.]",3))[3]))
-X_du = X_du[genes]
-X_pc = X_pc[genes]
+X_du = X_du[selected_genes]
+X_pc = X_pc[selected_genes]
 ```
 
-response variables
+Set response variables
 ```{r}
 Y_du = as.factor(df_du$response=="Res") # Resistant is 1
 Y_pc = as.factor(df_pc$response=="Res")
 ```
 
-Full model
+Fit full model
 ```{r}
 full.log_du = glm(Y_du~.,data=X_du,family=binomial(link="logit"))
 full.log_pc = glm(Y_pc~.,data=X_pc,family=binomial(link="logit"))
+summary(full.log_du)
+summary(full.log_pc)
+```
+Calculate chi-square of models - great, both are useful
+```{r}
+pchisq(full.log_du$null.deviance-full.log_du$deviance,
+       df=(full.log_du$df.null-full.log_du$df.residual),
+       lower.tail=FALSE)
+pchisq(full.log_pc$null.deviance-full.log_pc$deviance,
+       df=(full.log_pc$df.null-full.log_pc$df.residual),
+       lower.tail=FALSE)
+```
+
+LOOCV full models
+```{r}
+loocv.du = train(y=Y_du, x=X_du,
+                  method="glm", family="binomial",
+                  trControl=trainControl(method="LOOCV"))
+print(loocv.du)
+loocv.pc = train(y=Y_pc, x=X_pc,
+                  method="glm", family="binomial",
+                  trControl=trainControl(method="LOOCV"))
+print(loocv.pc)
+```
+
+AIC, BIC models
+```{r}
+du_aic = step(full.log_du, direction="both", k=2)
+du_bic = step(full.log_du, direction="both", k=log(ncol(X_du)))
+
+pc_aic = step(full.log_pc, direction="both", k=2)
+pc_bic = step(full.log_pc, direction="both", k=log(ncol(X_pc)))
+```
+
+```{r}
+summary(du_aic)
+summary(du_bic)
+```
+
+```{r}
+summary(pc_aic)
+summary(pc_bic)
+```
+
+Likelihood ratio test: PC3 BIC vs AIC
+```{r}
+print(paste("Statistic: ",pc_bic$deviance-pc_aic$deviance,sep=""))
+print(paste("df = ",length(pc_aic$coefficients)-length(pc_bic$coefficients),sep=""))
+pchisq(pc_bic$deviance-pc_aic$deviance,
+       df=length(pc_aic$coefficients)-length(pc_bic$coefficients),
+       lower.tail=FALSE) # PC
+# no need for DU comparison since it's exactly the same
+```
+
+Likelihood ratio test: PC3 BIC vs full; AIC vs full
+```{r}
+pc_bic$deviance-full.log_pc$deviance
+length(full.log_pc$coefficients)-length(pc_bic$coefficients)
+pchisq(pc_bic$deviance-full.log_pc$deviance,
+       df=length(full.log_pc$coefficients)-length(pc_bic$coefficients),
+       lower.tail=FALSE)
+pc_aic$deviance-full.log_pc$deviance
+length(full.log_pc$coefficients)-length(pc_aic$coefficients)
+pchisq(pc_aic$deviance-full.log_pc$deviance,
+       df=length(full.log_pc$coefficients)-length(pc_aic$coefficients),
+       lower.tail=FALSE)
+```
+Likelihood ratio test: DU145 BIC/AIC (same model) vs full
+```{r}
+du_bic$deviance-full.log_du$deviance
+length(full.log_du$coefficients)-length(du_bic$coefficients)
+pchisq(du_bic$deviance-full.log_du$deviance,
+       df=length(full.log_du$coefficients)-length(du_bic$coefficients),
+       lower.tail=FALSE)
+```
+Choose most parsimonious models: pc_bic and du_bic
+Calculate model effectiveness
+```{r}
+pchisq(du_bic$null.deviance-du_bic$deviance,
+       df=(du_bic$df.null-du_bic$df.residual),
+       lower.tail=FALSE)
+pchisq(pc_bic$null.deviance-pc_bic$deviance,
+       df=(pc_bic$df.null-pc_bic$df.residual),
+       lower.tail=FALSE)
+```
+
+
+Cross Validation
+```{r}
+X_du = X_du[,colnames(du_bic$R)[-1]]
+X_pc = X_pc[,colnames(pc_bic$R)[-1]]
+```
+LOOCV BIC models
+```{r}
+loocv.du = train(y=Y_du, x=X_du,
+                  method="glm", family="binomial",
+                  trControl=trainControl(method="LOOCV"))
+print(loocv.du)
+loocv.pc = train(y=Y_pc, x=X_pc,
+                  method="glm", family="binomial",
+                  trControl=trainControl(method="LOOCV"))
+print(loocv.pc)
+```
+ROC parsimonious models
+```{r}
+validationROC = function(data,seed_no,cell_line,train_prop=0.8){
+  # set random seed
+  set.seed(seed_no)
+  # split training and testing
+  n_train = round(nrow(data)*train_prop)
+  train_idxs = sample(nrow(data), size=n_train, replace=F)
+  training = data[train_idxs,]
+  testing = data[-train_idxs,]
+  # fit model on training data
+  m = glm(Y~., data=training, family="binomial")
+  x.test = testing[,names(testing) != 'Y']
+  y.test = testing$Y
+  predict_m = predict(m, newdata=x.test, type="response") # predict probabilities
+  resp_m = ifelse(predict_m > 0.5, 1, 0)
+  m_table = table(y.test, resp_m)
+  accuracy = sum(diag(m_table))/sum(m_table)
+  #acc_str = paste("Accuracy: ", accuracy, sep="")
+  auc = prediction(predict_m, y.test)
+  auc_val = performance(auc,measure='auc')@y.values[[1]]
+  roc = performance(auc, measure="tpr", x.measure="fpr")
+  return(c(accuracy,auc_val,roc,train_idxs))
+}
+
+# pack data together
+data_du = X_du
+data_du$Y = Y_du
+data_pc = X_pc
+data_pc$Y = Y_pc
+# select random seeds with a seed of 0
+num_seeds = 5
+set.seed(0)
+seeds = sample(0:1000, size=num_seeds, replace=FALSE)
+# plot ROCs
+accuracies_du = rep(0,num_seeds)
+aucs_du = rep(0,num_seeds)
+accuracies_pc = rep(0,num_seeds)
+aucs_pc = rep(0,num_seeds)
+for (i in 1:length(seeds)) {
+  stats_du = validationROC(data_du,seeds[i],"DU145")
+  stats_pc = validationROC(data_pc,seeds[i],"PC3")
+  accuracies_du[i] = stats_du[[1]]
+  aucs_du[i] = stats_du[[2]]
+  accuracies_pc[i] = stats_pc[[1]]
+  aucs_pc[i] = stats_pc[[2]]
+  plot(stats_du[[3]], col="red", main=paste("ROC, seed ",seeds[i],sep=""))
+  plot(stats_pc[[3]], add=TRUE, col="blue")
+  legend("bottomright", legend=c("DU145","PC3"), col=c("red","blue"), lty=c(1,1), title="Cell Lines")
+}
+
+```
+Calculate average AUCs and accuracies
+```{r}
+print(paste("Average DU145 Accuracy: ",mean(accuracies_du),sep=""))
+print(paste("Average PC3 Accuracy: ",mean(accuracies_pc),sep=""))
+print(paste("Average DU145 AUC: ",mean(aucs_du),sep=""))
+print(paste("Average PC3 AUC: ",mean(aucs_pc),sep=""))
+```
+
+
+Model Diagnostics
+
+Remove Outliers
+```{r}
+# traditional 4/n cutoff
+plot(du_bic, which=4, id.n=15)
+abline(h=4/length(Y_du), col="red")
+plot.new()
+plot(pc_bic, which=4, id.n=15)
+abline(h=4/length(Y_pc), col="red")
+```
+
+```{r}
+removeOutliers = function(x,y,idxs) {
+  idxs = idxs+1
+  return(list(x[-idxs,],y[-idxs]))
+}
+
+du_outliers = c(20,112,117) #c(1,20,46,54,65,72,96,98,99,101,112,115,117,130)
+pc_outliers = c(102,124,152) #c(0,1,15,27,37,41,88,91,102,118,124,125,147,152,177)
+
+cleaned_du = removeOutliers(X_du,Y_du,du_outliers)
+cleaned_pc = removeOutliers(X_pc,Y_pc,pc_outliers)
+
+Xdu = cleaned_du[[1]]
+Ydu = cleaned_du[[2]]
+Xpc = cleaned_pc[[1]]
+Ypc = cleaned_pc[[2]]
+
+final_du = glm(Ydu~.,data=Xdu,family=binomial(link="logit"))
+final_pc = glm(Ypc~.,data=Xpc,family=binomial(link="logit"))
+
+par(mfrow=c(2,2))
+plot(final_du)
+#mtext("DU145",side=3,line=-1,outer=T)
+par(mfrow=c(2,2))
+plot(final_pc)
+#mtext("PC3",side=3,line=-1,outer=T)
+
+
+
+pairs(Xdu)
+pairs(Xpc)
+pairs(log(Xpc**2))
+Xpc_mod = Xpc
+Xpc_mod$CENPF = 1/(Xpc_mod$CENPF)
+pairs(Xpc_mod)
+```
+
+Regularization
+```{r}
+regularization = function(data,seed_no,cell_line) {
+  stats = validationROC(data,seed_no,cell_line)
+  training = data[unlist(stats[4:length(stats)]),]
+  testing = data[-unlist(stats[4:length(stats)]),]
+  control = trainControl(method = "repeatedcv",
+                         number = 5,
+                         repeats = 5,
+                         search = "random")
+  # training elastic net to get best alpha and lambda
+  enet = train(Y~., data=data, method="glmnet", trControl=control)
+  # get parameters with highest accuracy
+  opt = enet$results[enet$results$Accuracy==max(enet$results$Accuracy),]
+  
+  enet_model = glmnet(as.matrix(training[,names(training)!='Y']), training$Y,
+                      alpha=opt$alpha, family="binomial", lambda=opt$lambda)
+  # predict probabilities
+  pred_enet = predict(enet_model, newx=as.matrix(testing[,names(testing)!='Y']))
+  pred_resp = ifelse(pred_enet>0.5,1,0)
+  # Model accuracy
+  enet_table = table(testing$Y,pred_resp)
+  accuracy = sum(diag(enet_table))/sum(enet_table)
+  
+  auc_enet = prediction(pred_enet,testing$Y)
+  auc_val = performance(auc_enet,measure='auc')@y.values[[1]]
+  roc_enet = performance(auc_enet,measure="tpr",x.measure="fpr")
+  return(c(accuracy,auc_val,roc_enet))
+}
+
+enet_accuracies_du = rep(0,num_seeds)
+enet_aucs_du = rep(0,num_seeds)
+enet_accuracies_pc = rep(0,num_seeds)
+enet_aucs_pc = rep(0,num_seeds)
+for (i in 1:length(seeds)) {
+  stats_du = regularization(data_du,seeds[i],"DU145")
+  stats_pc = regularization(data_pc,seeds[i],"PC3")
+  enet_accuracies_du[i] = stats_du[[1]]
+  enet_aucs_du[i] = stats_du[[2]]
+  enet_accuracies_pc[i] = stats_pc[[1]]
+  enet_aucs_pc[i] = stats_pc[[2]]
+  plot(stats_du[[3]], col="red", main=paste("Elastic Net ROC, seed ",seeds[i],sep=""))
+  plot(stats_pc[[3]], add=TRUE, col="blue")
+  legend("bottomright", legend=c("DU145","PC3"), col=c("red","blue"), lty=c(1,1), title="Cell Lines")
+}
+```
+
+```{r}
+print(paste("Average DU145 Elastic Net Accuracy: ",mean(enet_accuracies_du),sep=""))
+print(paste("Average PC3 Elastic Net Accuracy: ",mean(enet_accuracies_pc),sep=""))
+print(paste("Average DU145 Elastic Net AUC: ",mean(enet_aucs_du),sep=""))
+print(paste("Average PC3 Elastic Net AUC: ",mean(enet_aucs_pc),sep=""))
+```
+
+Comparison of performance metrics
+```{r}
+model_type = c(rep("Logistic",num_seeds),rep("Regularized",num_seeds))
+
+accuracy_du = c(accuracies_du,enet_accuracies_du)
+auc_du = c(aucs_du,enet_aucs_du)
+
+accuracy_pc = c(accuracies_pc,enet_accuracies_pc)
+auc_pc = c(aucs_pc,enet_aucs_pc)
+
+du_metrics = data.frame(model_type,accuracy_du,auc_du)
+pc_metrics = data.frame(model_type,accuracy_pc,auc_pc)
+
+p_du1 = ggplot(du_metrics, aes(factor(model_type),y=accuracy_du,fill=model_type)) +
+  geom_boxplot() + theme(legend.position="none", axis.title.x=element_blank(), plot.title=element_text(hjust=0.5)) +
+  ylim(0.8,1)+ ylab("Accuracy")+
+  ggtitle("DU145")
+p_du2 = ggplot(du_metrics, aes(factor(model_type),y=auc_du,fill=model_type)) +
+  geom_boxplot() + theme(legend.position="none") +
+  ylim(0.8,1) + xlab("Model Type") + ylab("AUC")
+p_pc1 = ggplot(pc_metrics, aes(factor(model_type),y=accuracy_pc,fill=model_type)) +
+  geom_boxplot() + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank(), plot.title=element_text(hjust=0.5)) +
+  ylim(0.8,1)+
+  ggtitle("PC3")
+p_pc2 = ggplot(pc_metrics, aes(factor(model_type),y=auc_pc,fill=model_type)) +
+  geom_boxplot() + theme(axis.title.y=element_blank()) +
+  ylim(0.8,1) + xlab("Model Type")
+
+p_du1+p_pc1 + p_du2+p_pc2
+```
+
+Get the regularized model
+Somehow the function can't return it properly so I used the seed to replicate it.
+```{r}
+# DU145
+du_seed = seeds[enet_aucs_du==max(enet_aucs_du)]
+
+stats_du = validationROC(data_du,du_seed,cell_line)
+training_du = data_du[unlist(stats_du[4:length(stats_du)]),]
+testing_du = data_du[-unlist(stats_du[4:length(stats_du)]),]
+control_du = trainControl(method = "repeatedcv",
+                         number = 5,
+                         repeats = 5,
+                         search = "random")
+# training elastic net to get best alpha and lambda
+enet_du = train(Y~., data=data_du, method="glmnet", trControl=control_du)
+# get parameters with highest accuracy
+opt_du = enet_du$results[enet_du$results$Accuracy==max(enet_du$results$Accuracy),]
+  
+enet_model_du = glmnet(as.matrix(training_du[,names(training_du)!='Y']), training_du$Y,
+                      alpha=opt_du$alpha, family="binomial", lambda=opt_du$lambda)
+print(paste("DU145 Alpha: ",opt_du$alpha))
+print(paste("DU145 Lambda: ",opt_du$lambda))
+coef(enet_model_du)
+
+
+# PC3
+pc_seed = seeds[enet_aucs_pc==max(enet_aucs_pc)]
+
+stats_pc = validationROC(data_pc,pc_seed,cell_line)
+training_pc = data_pc[unlist(stats_pc[4:length(stats_pc)]),]
+testing_pc = data_pc[-unlist(stats_pc[4:length(stats_pc)]),]
+control_pc = trainControl(method = "repeatedcv",
+                         number = 5,
+                         repeats = 5,
+                         search = "random")
+# training elastic net to get best alpha and lambda
+enet_pc = train(Y~., data=data_pc, method="glmnet", trControl=control_pc)
+# get parameters with highest accuracy
+opt_pc = enet_pc$results[enet_pc$results$Accuracy==max(enet_pc$results$Accuracy),]
+  
+enet_model_pc = glmnet(as.matrix(training_pc[,names(training_pc)!='Y']), training_pc$Y,
+                      alpha=opt_pc$alpha, family="binomial", lambda=opt_pc$lambda)
+print(paste("PC3 Alpha: ",opt_pc$alpha))
+print(paste("PC3 Lambda: ",opt_pc$lambda))
+coef(enet_model_pc)
 ```
 
 
